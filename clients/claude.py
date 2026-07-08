@@ -9,7 +9,7 @@ from typing import Optional, Dict, Any
 logger = logging.getLogger(__name__)
 
 # Usar variables de entorno para la API Key (más seguro)
-CLAUDE_API_KEY = os.getenv('CLAUDE_API_KEY', '')
+
 CLAUDE_MODEL = os.getenv('CLAUDE_MODEL', 'claude-sonnet-4-5')
 
 # Validar que la API Key está configurada
