@@ -1,10 +1,10 @@
 import os
 import requests
 
-TAIGA_URL = "https://api.taiga.io/api/v1"
-TAIGA_USER = ""
-TAIGA_PASS = ""
-TAIGA_PROJECT = ""
+TAIGA_URL = os.getenv("TAIGA_URL", "https://api.taiga.io/api/v1")
+TAIGA_USER = os.getenv("TAIGA_USER", "")
+TAIGA_PASS = os.getenv("TAIGA_PASS", "")
+TAIGA_PROJECT = os.getenv("TAIGA_PROJECT", "eduardogr92-pagos")
 
 
 class TaigaClient:
