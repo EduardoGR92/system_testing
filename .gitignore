@@ -1,0 +1,62 @@
+# Ambiente virtual
+venv/
+env/
+ENV/
+.venv/
+
+# Variables de entorno (NO commits de .env)
+.env
+.env.local
+.env.*.local
+
+# Cache de Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.iml
+
+# Logs
+*.log
+logs/
+
+# Output local
+output/
+test_results/
+reports/
+
+# Archivos temporales
+*.tmp
+*.bak
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Behave reports
+reports/
+test-results/
+

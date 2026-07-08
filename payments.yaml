@@ -1,0 +1,470 @@
+openapi: 3.1.0
+info:
+  title: Payments
+  version: 1.0.0
+paths:
+  /payments/healthcheck:
+    get:
+      summary: Healthcheck
+      operationId: healthcheck_payments_healthcheck_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+              example:
+                status: UP
+                service: payments
+                database: UP
+  /payments:
+    post:
+      summary: Create Payment
+      operationId: create_payment_payments_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentCreate'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentCreateResponse'
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              examples:
+                mandatory_field:
+                  summary: Mandatory field not informed
+                  value:
+                    detail:
+                      error: Mandatory field not informed
+                      details:
+                      - type: missing
+                        loc:
+                        - body
+                        - amount
+                        msg: Field required
+                        input: {}
+                amount_not_allowed:
+                  summary: Amount not allowed
+                  value:
+                    detail:
+                      error: Amount not allowed
+                      message: Amount must be greater than 0
+  /payments/card/{card_id}:
+    get:
+      summary: Get Payment Cardid
+      operationId: get_payment_cardId_payments_card__card_id__get
+      parameters:
+      - name: card_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Card Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PaymentListItem'
+                title: Response Get Payment Cardid Payments Card  Card Id  Get
+        '404':
+          content:
+            application/json:
+              example:
+                detail:
+                  error: Not payments found
+                  message: Not payments found
+          description: Not Found
+        '400':
+          content:
+            application/json:
+              example:
+                detail:
+                  error: Mandatory field not informed
+                  details:
+                  - type: missing
+                    loc:
+                    - body
+                    - card_id
+                    msg: Field required
+                    input: {}
+          description: Bad Request
+  /payments/{payment_id}:
+    get:
+      summary: Get Payment
+      operationId: get_payment_payments__payment_id__get
+      parameters:
+      - name: payment_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Payment Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentDetailResponse'
+        '404':
+          content:
+            application/json:
+              example:
+                detail:
+                  error: Payment not found
+                  message: Payment not found
+          description: Not Found
+        '400':
+          content:
+            application/json:
+              example:
+                detail:
+                  error: Mandatory field not informed
+                  details:
+                  - type: int_parsing
+                    loc:
+                    - path
+                    - payment_id
+                    msg: Input should be a valid integer
+                    input: abc
+          description: Bad Request
+  /payments/{payment_id}/cancel:
+    post:
+      summary: Cancel Payment
+      operationId: cancel_payment_payments__payment_id__cancel_post
+      parameters:
+      - name: payment_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Payment Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelPayment'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CancelPaymentResponse'
+        '400':
+          content:
+            application/json:
+              example:
+                detail:
+                  error: Mandatory field not informed
+                  details:
+                  - type: missing
+                    loc:
+                    - body
+                    - reason
+                    msg: Field required
+                    input: {}
+          description: Bad Request
+        '404':
+          content:
+            application/json:
+              example:
+                detail:
+                  error: Payment not found
+          description: Not Found
+        '409':
+          content:
+            application/json:
+              example:
+                detail:
+                  error: Payment already cancelled
+          description: Conflict
+  /payments/{payment_id}/authorize:
+    post:
+      summary: Authorize Payment
+      operationId: authorize_payment_payments__payment_id__authorize_post
+      parameters:
+      - name: payment_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Payment Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthorizePayment'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthorizePaymentResponse'
+        '400':
+          content:
+            application/json:
+              example:
+                detail:
+                  error: Mandatory field not informed
+                  details:
+                  - type: missing
+                    loc:
+                    - body
+                    - card_id
+                    msg: Field required
+                    input: {}
+          description: Bad Request
+        '404':
+          content:
+            application/json:
+              example:
+                detail:
+                  error: Payment not found
+          description: Not Found
+        '409':
+          content:
+            application/json:
+              example:
+                detail:
+                  error: Payment already authorized
+          description: Conflict
+components:
+  schemas:
+    AuthorizePayment:
+      properties:
+        card_id:
+          type: string
+          title: Card Id
+      type: object
+      required:
+      - card_id
+      title: AuthorizePayment
+    AuthorizePaymentResponse:
+      properties:
+        payment_id:
+          type: integer
+          title: Payment Id
+        status:
+          type: integer
+          title: Status
+        card_id:
+          type: string
+          title: Card Id
+      type: object
+      required:
+      - payment_id
+      - status
+      - card_id
+      title: AuthorizePaymentResponse
+      example:
+        card_id: card_123
+        payment_id: 1
+        status: 1
+    CancelPayment:
+      properties:
+        card_id:
+          type: string
+          title: Card Id
+        reason:
+          type: string
+          title: Reason
+      type: object
+      required:
+      - card_id
+      - reason
+      title: CancelPayment
+    CancelPaymentResponse:
+      properties:
+        payment_id:
+          type: integer
+          title: Payment Id
+        status:
+          type: integer
+          title: Status
+        reason:
+          type: string
+          title: Reason
+      type: object
+      required:
+      - payment_id
+      - status
+      - reason
+      title: CancelPaymentResponse
+      example:
+        payment_id: 1
+        reason: Cancelled by user
+        status: 4
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
+      type: object
+      title: HTTPValidationError
+    PaymentCreate:
+      properties:
+        amount:
+          type: number
+          title: Amount
+        card_id:
+          type: string
+          title: Card Id
+        currency:
+          type: string
+          title: Currency
+        country_id:
+          type: string
+          title: Country Id
+        merchant_id:
+          type: string
+          title: Merchant Id
+      type: object
+      required:
+      - amount
+      - card_id
+      - currency
+      - country_id
+      - merchant_id
+      title: PaymentCreate
+    PaymentCreateResponse:
+      properties:
+        status:
+          type: integer
+          title: Status
+        amount:
+          type: number
+          title: Amount
+        currency:
+          type: string
+          title: Currency
+        card_id:
+          type: string
+          title: Card Id
+      type: object
+      required:
+      - status
+      - amount
+      - currency
+      - card_id
+      title: PaymentCreateResponse
+      example:
+        amount: 10.5
+        card_id: card_123
+        currency: EUR
+        status: 0
+    PaymentDetailResponse:
+      properties:
+        amount:
+          type: number
+          title: Amount
+        currency:
+          type: string
+          title: Currency
+        card_id:
+          type: string
+          title: Card Id
+        country_id:
+          type: string
+          title: Country Id
+        merchant_id:
+          type: string
+          title: Merchant Id
+        status:
+          type: integer
+          title: Status
+      type: object
+      required:
+      - amount
+      - currency
+      - card_id
+      - country_id
+      - merchant_id
+      - status
+      title: PaymentDetailResponse
+      example:
+        amount: 10.5
+        card_id: card_123
+        country_id: ES
+        currency: EUR
+        merchant_id: merchant_1
+        status: 0
+    PaymentListItem:
+      properties:
+        payment_id:
+          type: integer
+          title: Payment Id
+        amount:
+          type: number
+          title: Amount
+        currency:
+          type: string
+          title: Currency
+        merchant_id:
+          type: string
+          title: Merchant Id
+        country_id:
+          type: string
+          title: Country Id
+        status:
+          type: integer
+          title: Status
+      type: object
+      required:
+      - payment_id
+      - amount
+      - currency
+      - merchant_id
+      - country_id
+      - status
+      title: PaymentListItem
+      example:
+        amount: 10.5
+        country_id: ES
+        currency: EUR
+        merchant_id: merchant_1
+        payment_id: 1
+        status: 0
+    ValidationError:
+      properties:
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          type: array
+          title: Location
+        msg:
+          type: string
+          title: Message
+        type:
+          type: string
+          title: Error Type
+        input:
+          title: Input
+        ctx:
+          type: object
+          title: Context
+      type: object
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError
