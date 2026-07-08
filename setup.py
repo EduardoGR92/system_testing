@@ -29,13 +29,6 @@ def setup_env():
         else:
             print("   ❌ Clave inválida. Debe empezar con 'sk-ant-'")
 
-    # CLAUDE MODEL (opcional)
-    print("\n2️⃣  CLAUDE MODEL (dejar en blanco para usar el por defecto)")
-    print("   Modelos disponibles:")
-    print("   - claude-sonnet-4-5 (recomendado)")
-    print("   - claude-sonnet-4-6")
-    print("   - claude-opus-4-5 (mas capaz, mas caro)")
-    print("   - claude-opus-4-8 (mas reciente)")
 
     claude_model = input("   CLAUDE_MODEL [claude-sonnet-4-5]: ").strip()
     if not claude_model:
@@ -53,7 +46,7 @@ def setup_env():
 # Generado por setup.py
 
 # Claude API (REQUERIDO)
-CLAUDE_API_KEY="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"
+CLAUDE_API_KEY=""
 CLAUDE_MODEL="claude-3-5-sonnet-20241022"
 
 # Taiga (Opcional)
@@ -70,19 +63,6 @@ LOG_LEVEL=INFO
 
     print(f"✅ Archivo .env creado correctamente: {env_file.absolute()}")
 
-    print("\n" + "=" * 60)
-    print("PRÓXIMOS PASOS:")
-    print("=" * 60)
-    print("1. Instala las dependencias:")
-    print("   pip install -r requirements.txt")
-    print("\n2. Ejecuta los agentes:")
-    print("   python agents/ingest.py 1")
-    print("   python agents/agent_generator.py 1")
-    print("   python agents/agent_validator.py 1")
-    print("\n3. O ejecuta el flujo completo:")
-    print("   python main.py")
-    print("\n⚠️  IMPORTANTE: Nunca compartas tu .env - está en .gitignore")
-    print("=" * 60)
 
 if __name__ == "__main__":
     try:
