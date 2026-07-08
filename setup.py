@@ -46,7 +46,7 @@ def setup_env():
 # Generado por setup.py
 
 # Claude API (REQUERIDO)
-CLAUDE_API_KEY=""
+CLAUDE_API_KEY="hola"
 CLAUDE_MODEL="claude-3-5-sonnet-20241022"
 
 # Taiga (Opcional)

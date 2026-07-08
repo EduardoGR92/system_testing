@@ -6,6 +6,7 @@ ENV/
 
 # Variables de entorno (NO commits de .env)
 .env
+.env.*
 .env.local
 .env.*.local
 
@@ -59,4 +60,5 @@ htmlcov/
 # Behave reports
 reports/
 test-results/
+
 
