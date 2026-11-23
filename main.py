@@ -6,6 +6,7 @@ import sys
 import time
 from pathlib import Path
 import yaml
+from clients.efficiency import medir_ejecucion, configured_model, registrar_tiempo_fase, timed_input as input
 
 # Imports pesados se cargan de forma lazy (dentro de las funciones que los usan)
 # para que el menu aparezca sin espera al arrancar.
@@ -16,15 +17,6 @@ logger = logging.getLogger(__name__)
 
 # Cargar variables de entorno desde .env
 load_dotenv()
-
-# Verificar que la API key está configurada
-if not os.getenv('CLAUDE_API_KEY'):
-    raise ValueError(
-        "❌ CLAUDE_API_KEY no está configurada en .env\n"
-        "1. Obtén una clave en: https://console.anthropic.com/account/keys\n"
-        "2. Edita .env y añade: CLAUDE_API_KEY=sk-ant-..."
-    )
-
 
 # Umbral de score global a partir del cual se considera "ok" (no regenerar mas)
 SCORE_OK = 0.95
@@ -37,23 +29,6 @@ def _fmt_tiempo(segundos: float) -> str:
         s = segundos % 60
         return f"{m}m {s:.0f}s"
     return f"{segundos:.1f}s"
-
-
-def _imprimir_resumen_tiempos(tiempos: dict):
-    """Imprime el resumen de tiempos en formato estandar para los 3 flujos."""
-    _iconos = {
-        "Ingesta":    "📥",
-        "Generacion": "🤖",
-        "Validacion": "✅",
-        "Ejecucion":  "🧪",
-        "TOTAL":      "🕐",
-    }
-    print(f"\n{'='*52}")
-    print(f"   ⏱️  Resumen de tiempos:")
-    for fase, secs in tiempos.items():
-        icono = _iconos.get(fase, "⏱️ ")
-        print(f"      {icono} {fase:<28}: {_fmt_tiempo(secs)}")
-    print(f"{'='*52}")
 
 
 def _preguntar_sobrescribir(hu_id, feature_existente) -> bool:
@@ -196,13 +171,12 @@ def _regenerar_casos_faltantes(generator, validator, hu, feature_result, feature
     """
     from agents.agent_validator import AgentValidator
     if (validation_result.get("overall_score", 0) or 0) >= SCORE_OK:
-        sugerencias = (validation_result.get("semantic_validation") or {}).get("improvement_suggestions") or []
-        if sugerencias:
-            resp = input("   ❓ ¿Quieres aplicar las sugerencias de mejora y regenerar? (s/n): ").strip().lower()
+        feedback = generator.faltantes_de_validacion(validation_result)
+        if feedback:
+            resp = input("   ❓ ¿Quieres refinar el feature con el feedback del validador? (s/n): ").strip().lower()
             if resp in ("s", "si", "sí", "y", "yes"):
-                feedback = generator.faltantes_de_validacion(validation_result)
                 if feedback:
-                    print("   🔄 Regenerando feature con sugerencias de mejora...")
+                    print("   🔄 Refinando feature con el feedback del validador...")
                     feature_result, feature_path = generator.regenerar_con_feedback(hu, feedback)
                     print(f"   ✅ Feature regenerado en: {feature_path}")
                     generated = AgentValidator.load_generated(feature_path, "tests/steps/steps.py")
@@ -228,6 +202,8 @@ def _regenerar_casos_faltantes(generator, validator, hu, feature_result, feature
         generated["used_endpoints"] = feature_result.get("endpoints_swagger", [])
         validation_result = validator.validate_complete(generated, hu)
         _mostrar_score_validacion(validation_result)
+        if (validation_result.get("overall_score", 0) or 0) >= SCORE_OK:
+            break
 
     return feature_result, feature_path, validation_result
 
@@ -269,18 +245,16 @@ def _validar_y_registrar_generados(generator, validator, generados, max_iteracio
         validation_result = validator.validate_complete(generated, hu, validar_semantica=validar_semantica)
         _mostrar_score_validacion(validation_result, mostrar_detalle=mostrar_detalle)
 
-        # Si score OK pero hay sugerencias, ofrecer aplicarlas (hasta 3 iteraciones)
-        for _iter_sug in range(3):
+        # Si el score inicial es suficiente, ofrecer un solo refinamiento con feedback.
+        score_inicial_ok = (validation_result.get("overall_score", 0) or 0) >= score_ok
+        for _iter_sug in range(1 if score_inicial_ok else 0):
             if (validation_result.get("overall_score", 0) or 0) < score_ok:
-                break
-            sugerencias = (validation_result.get("semantic_validation") or {}).get("improvement_suggestions") or []
-            if not sugerencias:
-                break
-            resp = input(f"   ❓ ¿Quieres aplicar las sugerencias de mejora y regenerar? (s/n) [{_iter_sug + 1}/3]: ").strip().lower()
-            if resp not in ("s", "si", "sí", "y", "yes"):
                 break
             feedback = generator.faltantes_de_validacion(validation_result)
             if not feedback:
+                break
+            resp = input("   ❓ ¿Quieres refinar el feature con el feedback del validador? (s/n): ").strip().lower()
+            if resp not in ("s", "si", "sí", "y", "yes"):
                 break
             print("   🔄 Regenerando feature con sugerencias de mejora...")
             feature_result, feature_path = generator.regenerar_con_feedback(hu, feedback, endpoints=contract_endpoints)
@@ -293,7 +267,7 @@ def _validar_y_registrar_generados(generator, validator, generados, max_iteracio
             _mostrar_score_validacion(validation_result, mostrar_detalle=mostrar_detalle)
 
         # Regenerar si el score no llega al umbral, preguntando al usuario cada vez
-        for _ in range(max_iteraciones):
+        for _ in range(0 if score_inicial_ok else max_iteraciones):
             score = validation_result.get("overall_score", 0) or 0
             if score >= score_ok:
                 break
@@ -363,14 +337,14 @@ def mostrar_menu():
     print("2. Todas las HUs del sprint activo")
     print("3. Esquema OpenAPI (payments.yaml)")
     print("0. Salir")
+    print(f"\n🤖 LLM activo: {configured_model()}")
     print("\n" + "-"*60)
-    return input("Selecciona una opción (0-3):").strip()
+    return input("Selecciona una opción (0-3): ").strip()
 
 
 def opcion_hu_especifica():
     """Importa una HU específica."""
     import reporter
-    reporter.HU_METRICS_FILE.unlink(missing_ok=True)
     print("Ingresa el número de la HU")
     try:
         hu_number = int(input("   HU número: ").strip())
@@ -379,21 +353,24 @@ def opcion_hu_especifica():
             return None
         
         logger.info(f"Importando HU #{hu_number}...")
+        reporter.reiniciar_metricas_validacion(reporter.HU_METRICS_FILE)
         return procesar_hu(hu_number)
     except ValueError:
         print("Debes ingresar un número válido")
         return None
 
 
+@medir_ejecucion("Sprint activo")
 def opcion_sprint_activo():
     """Importa todas las HUs del sprint activo."""
     import reporter
-    reporter.HU_METRICS_FILE.unlink(missing_ok=True)
+    reporter.reiniciar_metricas_validacion(reporter.HU_METRICS_FILE)
     from clients.ingest import extract_info_allHU
     logger.info("Obteniendo todas las HUs del sprint activo...")
-    _t_total = time.perf_counter()
+    _t_ingesta_ini = time.perf_counter()
     try:
         hus = extract_info_allHU()
+        registrar_tiempo_fase("Ingesta", time.perf_counter() - _t_ingesta_ini)
         if not hus:
             print("❌ No se encontraron HUs disponibles")
             return None
@@ -406,19 +383,19 @@ def opcion_sprint_activo():
             if resultado:
                 resultados.append(resultado)
         
-        _imprimir_resumen_tiempos({"TOTAL": time.perf_counter() - _t_total})
         return resultados
     except Exception as e:
         logger.error(f"Error al obtener sprint: {str(e)}")
         return None
 
 
+@medir_ejecucion("OpenAPI YAML")
 def opcion_yaml():
     """Carga datos desde archivo YAML OpenAPI (payments.yaml)."""
     from agents.agent_generator import AgentGenerator
     from agents.agent_validator import AgentValidator
     import reporter
-    reporter.OPENAPI_METRICS_FILE.unlink(missing_ok=True)
+    reporter.reiniciar_metricas_validacion(reporter.OPENAPI_METRICS_FILE)
     yaml_file = Path("payments.yaml")
     _t_total = time.perf_counter()
     
@@ -456,28 +433,28 @@ def opcion_yaml():
             print(f"   ⚠️  Validación del esquema con warnings/errores")
         _mostrar_score_validacion(validation_result)
         _t_ingesta = time.perf_counter() - _t_total
+        registrar_tiempo_fase("Ingesta", _t_ingesta)
 
         # Generar escenarios SOLO para los endpoints que aun no tienen feature
         _t_gen_ini = time.perf_counter()
         generator = AgentGenerator()
         generados = generator.generar_escenarios_no_cubiertos(data)
         _t_generacion = time.perf_counter() - _t_gen_ini
+        registrar_tiempo_fase("Generacion", _t_generacion)
 
         _t_val_ini = time.perf_counter()
         _res = _validar_y_registrar_generados(generator, validator, generados, data=data, mostrar_detalle=False, validar_semantica=True, metrics_file=reporter.OPENAPI_METRICS_FILE)
         _t_ejecucion_yaml = _res[1] if isinstance(_res, tuple) else 0.0
         _t_validacion_ejecucion = time.perf_counter() - _t_val_ini - _t_ejecucion_yaml
+        registrar_tiempo_fase("Validacion", _t_validacion_ejecucion)
+        if _t_ejecucion_yaml > 0:
+            registrar_tiempo_fase("Ejecucion", _t_ejecucion_yaml)
 
         # Registrar metricas (Excel) y evidencias basicas del esquema OpenAPI
         reporte = reporter.registrar_openapi(data, validation_result, str(yaml_file))
         if reporte:
             print(f"\n📊 Métricas: {reporte.get('metricas_excel')}")
         
-        _tiempos_yaml = {"Ingesta": _t_ingesta, "Generacion": _t_generacion, "Validacion": _t_validacion_ejecucion}
-        if _t_ejecucion_yaml > 0:
-            _tiempos_yaml["Ejecucion"] = _t_ejecucion_yaml
-        _tiempos_yaml["TOTAL"] = time.perf_counter() - _t_total
-        _imprimir_resumen_tiempos(_tiempos_yaml)
         return {
             "openapi_data": data,
             "title": title,
@@ -489,6 +466,7 @@ def opcion_yaml():
         return None
 
 
+@medir_ejecucion("HU individual")
 def procesar_hu(hu_number: int):
     """Procesa una HU específica (ingestar → generar → validar)."""
     from clients.ingest import extract_info
@@ -507,6 +485,7 @@ def procesar_hu(hu_number: int):
         hu = hu_data[0]
         print(f"   ✅ HU extraída: {hu.get('subject', 'Sin título')}")
         _t_ingesta = time.perf_counter() - _t_inicio
+        registrar_tiempo_fase("Ingesta", _t_ingesta)
 
         # Comprobar si la HU ya existe y preguntar si se sobrescribe
         hu_id = hu.get("ref", hu_number)
@@ -533,6 +512,7 @@ def procesar_hu(hu_number: int):
         feature_path = generator.save_feature(hu, feature_result)
         print(f"   ✅ Archivos guardados en: {feature_path}")
         _t_generacion = time.perf_counter() - _t_gen_ini
+        registrar_tiempo_fase("Generacion", _t_generacion)
 
         # 4. Validar
         _t_val_ini = time.perf_counter()
@@ -552,6 +532,7 @@ def procesar_hu(hu_number: int):
         feature_result, feature_path, validation_result = _regenerar_casos_faltantes(
             generator, validator, hu, feature_result, feature_path, validation_result)
         _t_validacion = time.perf_counter() - _t_val_ini
+        registrar_tiempo_fase("Validacion", _t_validacion)
 
         # 5. Preguntar si se quiere ejecutar antes de registrar
         resp_exec = input("\n   ❓ ¿Deseas ejecutar las pruebas generadas ahora? (s/n): ").strip().lower()
@@ -572,12 +553,8 @@ def procesar_hu(hu_number: int):
                 fallidos = ejec.get("failed", 0) + ejec.get("errors", 0)
                 print(f"   🧪 Ejecución: {ejec.get('passed', 0)} passed, "
                       f"{fallidos} failed (incluye {ejec.get('errors', 0)} errors)")
-        _t_total_val = time.perf_counter() - _t_inicio
-        _tiempos = {"Ingesta": _t_ingesta, "Generacion": _t_generacion, "Validacion": _t_validacion}
         if ejecutar:
-            _tiempos["Ejecucion"] = _t_ejecucion
-        _tiempos["TOTAL"] = _t_total_val
-        _imprimir_resumen_tiempos(_tiempos)
+            registrar_tiempo_fase("Ejecucion", _t_ejecucion)
         
         return {
             "hu_id": hu.get("ref"),
@@ -617,6 +594,7 @@ def procesar_hu_completo(hu: dict):
         feature_result = generator.generate_feature(hu)
         feature_path = generator.save_feature(hu, feature_result)
         _t_generacion = time.perf_counter() - _t_inicio
+        registrar_tiempo_fase("Generacion", _t_generacion)
 
         # Validar
         _t_val_ini = time.perf_counter()
@@ -630,6 +608,7 @@ def procesar_hu_completo(hu: dict):
         feature_result, feature_path, validation_result = _regenerar_casos_faltantes(
             generator, validator, hu, feature_result, feature_path, validation_result)
         _t_validacion = time.perf_counter() - _t_val_ini
+        registrar_tiempo_fase("Validacion", _t_validacion)
 
         # Preguntar si se quiere ejecutar antes de registrar
         resp_exec = input("\n   ❓ ¿Deseas ejecutar las pruebas generadas ahora? (s/n): ").strip().lower()
@@ -645,11 +624,8 @@ def procesar_hu_completo(hu: dict):
             print(f"   📊 Métricas: {reporte.get('metricas_excel')}")
             if reporte.get("evidencias"):
                 print(f"   📁 Evidencias: {reporte.get('evidencias')}")
-        _tiempos = {"Generacion": _t_generacion, "Validacion": _t_validacion}
         if ejecutar:
-            _tiempos["Ejecucion"] = _t_ejecucion
-        _tiempos["TOTAL"] = time.perf_counter() - _t_inicio
-        _imprimir_resumen_tiempos(_tiempos)
+            registrar_tiempo_fase("Ejecucion", _t_ejecucion)
 
         ejec = (reporte or {}).get("ejecucion") or {}
         return {
@@ -703,6 +679,7 @@ def mostrar_resultados(resultados):
     print("   - features/hu*.feature")
     print("   - steps.py")
     print("="*60 + "\n")
+
 
 
 def main():

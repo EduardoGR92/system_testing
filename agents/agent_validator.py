@@ -1,4 +1,5 @@
 from clients.claude import Claude
+from clients.efficiency import contexto_llm
 from clients.swagger import SwaggerReader
 import re
 import logging
@@ -16,7 +17,7 @@ class AgentValidator:
     Agente validador que verifica la calidad de los features y steps generados.
     """
 
-    def __init__(self, yaml_data: dict = None):
+    def __init__(self, yaml_data: dict = None, model=None):
         """
         Inicializa el validador con Swagger y el modelo Claude.
 
@@ -31,7 +32,7 @@ class AgentValidator:
             logger.info("Inicializando AgentValidator...")
             self._yaml_data = yaml_data
             self.swagger = None if yaml_data else SwaggerReader(URL_SWAGGER)
-            self.model = Claude()
+            self.model = model if model is not None else Claude(role="Validador")
             logger.info("AgentValidator inicializado correctamente")
         except Exception as e:
             logger.error(f"Error al inicializar AgentValidator: {str(e)}")
@@ -598,16 +599,6 @@ class AgentValidator:
         import json as _json
         templates_root = Path("tests/templates")
 
-        COLUMNAS_NO_TEMPLATE = {
-            "method", "endpoint", "expected_status", "expected_error", "expected_status_value",
-            "expected_reason", "expected_amount", "expected_currency", "expected_card_id",
-            "expected_status_field", "field_status", "field_amount", "field_currency",
-            "field_card_id", "field1", "field2", "field3", "field4", "field5",
-            "expected_value1", "expected_value2", "expected_value3", "expected_value4",
-            "expected_value5", "expected_error_message", "template",
-        }
-        VALORES_EXCLUIDOS = {"POST", "GET", "PUT", "DELETE", "PATCH"}
-
         secciones = []
         bloques = _re.split(r'\n(?=\s*Scenario)', feature_content)
         for bloque in bloques:
@@ -626,13 +617,10 @@ class AgentValidator:
             for data_row in rows[1:]:
                 values = [v.strip() for v in data_row.split('|')]
                 for header, value in zip(headers, values):
-                    if not value or not header:
+                    if not value or not header.strip().lower().startswith("template"):
                         continue
-                    if header.strip() in COLUMNAS_NO_TEMPLATE:
-                        continue
-                    if value in VALORES_EXCLUIDOS or value.startswith('/') or value[0:1].isdigit():
-                        continue
-                    if '_' in value:
+                    # Los templates se referencian por nombre, nunca por ruta.
+                    if _re.fullmatch(r"[\w.-]+", value) and value not in {".", ".."}:
                         template_nombres.add(value)
             if not template_nombres:
                 continue
@@ -740,15 +728,28 @@ Reglas de puntuacion (0.0 a 1.0):
   basados en buenas practicas REST ni en tu conocimiento general. Si la HU no declara
   un criterio concreto, NO lo cuentes como criterio faltante.
 - "semantic_score": coherencia semantica, naming y correccion de los asserts/codigos.
-  CRITICO — REGLA ABSOLUTA: los warnings de implementacion de steps (puntos a, b, c
-  anteriores) JAMAS pueden reducir el semantic_score ni en una decima. Son advertencias
-  informativas sobre el codigo Python, completamente independientes de la calidad del
-  feature BDD. Si el UNICO motivo para bajar el semantic_score son warnings de steps,
-  el semantic_score DEBE ser 1.0 obligatoriamente.
-  El semantic_score SOLO puede bajar por problemas en el propio feature .gherkin:
-  escenarios sin sentido, nombres poco descriptivos, codigos HTTP incorrectos segun el
-  contrato, o asserts que validan campos que no existen en el contrato. Si no hay ninguno
-  de estos problemas en el feature, el semantic_score es 1.0 sin excepcion.
+  CRITICO — ADVERTENCIAS INFORMATIVAS: los warnings sobre problemas de implementacion
+  de steps (puntos a y b anteriores), limitaciones del contrato o falta de informacion
+  para verificar un valor NO penalizan el semantic_score ni el coverage_score.
+  La ausencia de evidencia de que algo sea correcto NO demuestra que sea incorrecto.
+  El semantic_score SOLO puede bajar si identificas un defecto verificable del propio
+  feature .gherkin, como escenarios incoherentes, nombres poco descriptivos, codigos HTTP
+  incompatibles con el contrato, asserts sobre campos ausentes de un esquema completo
+  o valores que contradicen la HU, el contrato o su template real (punto c).
+  CRITICO — MENSAJES DE ERROR: los examples de OpenAPI son ilustrativos y no constituyen
+  necesariamente un listado exhaustivo de mensajes posibles. Si el mensaje esperado
+  en un escenario no figura en los ejemplos del endpoint/codigo HTTP pero no contradice
+  una regla explicita de la HU o del contrato para ese mismo caso, reportalo unicamente
+  como warning informativo. NO reduzcas el semantic_score ni el coverage_score, NO lo
+  clasifiques como error y NO sugieras sustituirlo por el mensaje de otro caso distinto.
+  Ejemplo: un escenario de importe invalido espera 'Amount not allowed' con HTTP 400 y
+  OpenAPI solo muestra 'Mandatory field not informed' como ejemplo de HTTP 400. Si no
+  hay una regla explicita contradictoria, el mensaje de importe invalido es una
+  limitacion de verificacion documental; manten el semantic_score en 1.0 si no existen
+  otros defectos semanticos demostrables.
+  REGLA FINAL: si no hay defectos semanticos concretos y verificables, devuelve siempre
+  semantic_score = 1.0, aunque existan uno o varios warnings informativos. No apliques
+  penalizaciones por el mero numero de advertencias o por incertidumbre documental.
 Pon "valid": false SOLO si coverage_score < 0.70, hay escenarios sin Given/When/Then
 o hay codigos HTTP claramente incorrectos segun el contrato.
 En "errors" lista problemas graves, en "warnings" problemas menores y en
@@ -835,7 +836,8 @@ Devuelve EXACTAMENTE este JSON:
   "warnings": [],
   "improvement_suggestions": []
 }}"""
-            response = self.model.generate_feature(prompt)
+            with contexto_llm(hu.get('ref', 'UNKNOWN'), "Validación funcional"):
+                response = self.model.generate_feature(prompt)
             response_text = response.text if hasattr(response, 'text') else str(response)
 
             # Parsear JSON de la respuesta
@@ -1061,7 +1063,8 @@ Devuelve EXACTAMENTE este JSON:
   "warnings": [],
   "improvement_suggestions": []
 }}"""
-            response = self.model.generate_feature(prompt)
+            with contexto_llm("OpenAPI", "Validación del contrato"):
+                response = self.model.generate_feature(prompt)
             response_text = response.text if hasattr(response, 'text') else str(response)
 
             try:

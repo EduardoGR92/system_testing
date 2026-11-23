@@ -246,6 +246,89 @@ def _estilizar_filas(ws):
             ws.cell(row=fila, column=col).number_format = '0.0"%"'
 
 
+def hoja_datos_metricas(wb, nombre, nombre_datos, cabeceras):
+    """Mantiene la tabla original como fuente interna, migrando históricos existentes."""
+    if nombre_datos in wb.sheetnames:
+        return wb[nombre_datos]
+    if nombre in wb.sheetnames:
+        ws = wb[nombre]
+        if ws.cell(1, 1).value not in (None, cabeceras[0]):
+            raise ValueError(f"No se puede migrar la hoja {nombre}: cabecera desconocida")
+        ws.title = nombre_datos
+    else:
+        ws = wb.create_sheet(nombre_datos)
+    if ws.cell(1, 1).value is None:
+        for i, titulo in enumerate(cabeceras, 1):
+            ws.cell(1, i, titulo)
+    return ws
+
+
+def crear_vista_metricas(wb, fuente, nombre, identificar, *, ocultar=(), renombrar=None, sumar=None, formatos=None, filtrar=None):
+    """Presenta cada registro en una columna y cada métrica en una fila."""
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+    import math
+
+    indice = wb.index(wb[nombre]) if nombre in wb.sheetnames else wb.index(fuente)
+    if nombre in wb.sheetnames:
+        wb.remove(wb[nombre])
+    vista = wb.create_sheet(nombre, indice)
+    azul = PatternFill("solid", fgColor="1F4E78")
+    claro = PatternFill("solid", fgColor="E8F0F7")
+    verde = PatternFill("solid", fgColor="C6EFCE")
+    rojo = PatternFill("solid", fgColor="FFC7CE")
+    renombrar = renombrar or {}
+    sumar = sumar or {}
+    formatos = formatos or {}
+    cabeceras = [celda.value for celda in fuente[1]]
+    visibles = [(i, titulo) for i, titulo in enumerate(cabeceras) if titulo not in ocultar]
+    vista.cell(1, 1, "Métrica")
+    for idx, (_, titulo) in enumerate(visibles, 2):
+        vista.cell(idx, 1, renombrar.get(titulo, titulo))
+    vista.column_dimensions['A'].width = 37
+    filas = (registros for registros in fuente.iter_rows(min_row=2)
+             if filtrar is None or filtrar([celda.value for celda in registros]))
+    for c, registros in enumerate(filas, 2):
+        valores = [celda.value for celda in registros]
+        if not any(v is not None for v in valores):
+            continue
+        vista.cell(1, c, identificar(valores, c - 1))
+        vista.column_dimensions[get_column_letter(c)].width = 40
+        for r, (i, titulo) in enumerate(visibles, 2):
+            original = registros[i]
+            valor = original.value
+            if titulo in sumar and valor is not None:
+                valor += sum(valores[cabeceras.index(extra)] or 0 for extra in sumar[titulo])
+            celda = vista.cell(r, c, valor)
+            celda.number_format = formatos.get(titulo, original.number_format)
+            celda.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            celda.font = Font(size=10)
+            if original.value == "SI":
+                celda.fill = verde
+            elif original.value == "NO":
+                celda.fill = rojo
+            elif r % 2 == 0:
+                celda.fill = claro
+            if isinstance(original.value, str):
+                lineas = sum(max(1, math.ceil(len(linea) / 37)) for linea in original.value.split('\n'))
+                vista.row_dimensions[r].height = max(vista.row_dimensions[r].height or 18, min(180, 15 * lineas + 4))
+    for celda in vista[1]:
+        celda.fill = azul
+        celda.font = Font(bold=True, color="FFFFFF", size=11)
+        celda.alignment = Alignment(horizontal="left" if celda.column == 1 else "center", vertical="center", wrap_text=True)
+    vista.row_dimensions[1].height = 32
+    for r in range(2, vista.max_row + 1):
+        celda = vista.cell(r, 1)
+        celda.font = Font(bold=True, size=10)
+        celda.fill = claro
+        celda.alignment = Alignment(vertical="top", wrap_text=True)
+        vista.row_dimensions[r].height = max(vista.row_dimensions[r].height or 18, 18)
+    vista.freeze_panes = "B2"
+    vista.sheet_view.showGridLines = False
+    fuente.sheet_state = "hidden"
+    return vista
+
+
 def _formato_condicional(ws):
     """Colorea celdas de validez (SI/NO) y aplica escalas de color a scores y %."""
     ultima = ws.max_row
@@ -368,6 +451,7 @@ def _crear_dashboard(wb, ws):
     categorias = Reference(ws, min_col=COL_HU, min_row=2, max_row=ws.max_row)
     barras.add_data(datos, titles_from_data=True)
     barras.set_categories(categorias)
+    barras.visible_cells_only = False  # La fuente tabular interna queda oculta.
     barras.height = 10
     barras.width = 18
     dash.add_chart(barras, "D2")
@@ -380,7 +464,7 @@ def _crear_dashboard(wb, ws):
         dash.cell(row=_fila_aux + 1, column=1, value="Failed").font = Font(bold=True)
         dash.cell(row=_fila_aux + 1, column=2, value=total_failed)
 
-        # Grafico circular — fila 22 para no solapar con el gráfico de barras (D2 + ~20 filas)
+        # Grafico circular a la derecha del gráfico de barras, en la misma fila.
         pie = PieChart()
         pie.title = "Total Passed vs Failed"
         etiquetas = Reference(dash, min_col=1, min_row=_fila_aux, max_row=_fila_aux + 1)
@@ -393,7 +477,7 @@ def _crear_dashboard(wb, ws):
         pie.dataLabels.showCatName = True
         pie.height = 10
         pie.width = 12
-        dash.add_chart(pie, "D22")
+        dash.add_chart(pie, "P2")
 
 
 def _crear_hoja_evaluacion(wb, ws):
@@ -523,6 +607,25 @@ def _crear_hoja_evaluacion(wb, ws):
     ev.freeze_panes = "A2"
 
 
+def reiniciar_metricas_validacion(filepath: Path):
+    """Conserva el histórico LLM; reinicia sólo el informe de calidad de la ejecución."""
+    if not filepath.exists():
+        return
+    _init_xl()
+    wb = load_workbook(filepath)
+    # El comportamiento anterior borraba todo el archivo. Ahora conserva Eficiencia,
+    # Peticiones y cualquier otra hoja no gestionada por el informe de validación.
+    for name in ("Metricas validacion", "Datos validacion", "Dashboard", "Evaluacion"):
+        if name in wb.sheetnames:
+            wb.remove(wb[name])
+    ws = wb.create_sheet("Datos validacion", 0)
+    ws.append(CABECERAS)
+    vista = crear_vista_metricas(wb, ws, "Metricas validacion", lambda v, n: str(v[1] or f"HU {n}"))
+    wb.active = vista
+    wb.save(filepath)
+    wb.close()
+
+
 def _guardar_metricas_excel(fila: list, filepath: Path = None):
     """Crea o actualiza el Excel anadiendo una fila de metricas, con estilo y graficos."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -530,12 +633,11 @@ def _guardar_metricas_excel(fila: list, filepath: Path = None):
 
     if filepath.exists():
         wb = load_workbook(filepath)
-        ws = wb["Metricas validacion"] if "Metricas validacion" in wb.sheetnames else wb.active
     else:
         wb = Workbook()
-        ws = wb.active
-        ws.title = "Metricas validacion"
-        ws.append(CABECERAS)
+        wb.active.title = "Datos validacion"
+        wb.active.append(CABECERAS)
+    ws = hoja_datos_metricas(wb, "Metricas validacion", "Datos validacion", CABECERAS)
 
     # Sobreescribir fila si la HU (col 2) ya existe; si no, añadir al final
     # Normalizar: ignorar prefijo "HU-" para que "POST_payments" == "HU-POST_payments"
@@ -560,6 +662,8 @@ def _guardar_metricas_excel(fila: list, filepath: Path = None):
     _formato_condicional(ws)
     _crear_dashboard(wb, ws)
     _crear_hoja_evaluacion(wb, ws)
+    vista = crear_vista_metricas(wb, ws, "Metricas validacion", lambda v, n: str(v[1] or f"HU {n}"))
+    wb.active = vista
     wb.save(filepath)
     logger.info(f"Metricas guardadas en: {filepath}")
 

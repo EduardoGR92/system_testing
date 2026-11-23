@@ -5,6 +5,7 @@ import json
 import re
 
 from clients.claude import Claude
+from clients.efficiency import contexto_llm
 from clients.swagger import SwaggerReader
 
 URL_SWAGGER = 'http://127.0.0.1:8000/openapi.json'
@@ -17,7 +18,7 @@ class AgentGenerator:
     Agente que genera features Gherkin y steps automáticamente a partir de Historias de Usuario.
     """
 
-    def __init__(self):
+    def __init__(self, model=None, strict_mode=False):
         """
         Inicializa el agente con el modelo Claude y el lector Swagger.
         
@@ -26,7 +27,8 @@ class AgentGenerator:
         """
         try:
             logger.info("Inicializando AgentGenerator...")
-            self.model = Claude()
+            self.model = model if model is not None else Claude(role="Generador")
+            self.strict_mode = strict_mode
             self.swagger = SwaggerReader(URL_SWAGGER)
             logger.info("AgentGenerator inicializado correctamente")
         except Exception as e:
@@ -202,7 +204,9 @@ Devuelve el resultado en un formato json estructurado EXACTAMENTE así (sin ning
         faltantes = feedback.get("escenarios_faltantes", []) or []
         sugerencias = feedback.get("improvement_suggestions", []) or []
         errores_estaticos = feedback.get("errores_estaticos", []) or []
-        if not (sin_cubrir or faltantes or sugerencias or errores_estaticos):
+        errores_funcionales = feedback.get("errores_funcionales", []) or []
+        advertencias = feedback.get("advertencias", []) or []
+        if not (sin_cubrir or faltantes or sugerencias or errores_estaticos or errores_funcionales or advertencias):
             return ""
         lineas = [
             "",
@@ -213,6 +217,9 @@ Devuelve el resultado en un formato json estructurado EXACTAMENTE así (sin ning
         if errores_estaticos:
             lineas.append("OBLIGATORIO — corrige estos errores de validacion en el feature/steps:")
             lineas.extend(f"  - {e}" for e in errores_estaticos)
+        if errores_funcionales:
+            lineas.append("OBLIGATORIO — corrige estos errores funcionales respaldados por la HU y el contrato:")
+            lineas.extend(f"  - {e}" for e in errores_funcionales)
         if sin_cubrir:
             lineas.append("OBLIGATORIO — anade un escenario para cada criterio sin cubrir:")
             lineas.extend(f"  - {c}" for c in sin_cubrir)
@@ -222,6 +229,9 @@ Devuelve el resultado en un formato json estructurado EXACTAMENTE así (sin ning
         if sugerencias:
             lineas.append("OBLIGATORIO — aplica TODAS estas mejoras al feature regenerado (NO son opcionales):")
             lineas.extend(f"  - {s}" for s in sugerencias)
+        if advertencias:
+            lineas.append("REVISA estas advertencias. Corrige solo problemas verificables con la HU o el contrato; no inventes datos ni cambies un mensaje de error correcto solo porque no aparece en los ejemplos OpenAPI:")
+            lineas.extend(f"  - {w}" for w in advertencias)
         lineas.append("")
         return "\n".join(lineas)
 
@@ -248,7 +258,8 @@ Devuelve el resultado en un formato json estructurado EXACTAMENTE así (sin ning
             
             # Pedimos a Claude una respuesta JSON estructurada
             try:
-                result = self.model.generate_json(prompt)
+                with contexto_llm(hu.get('ref', 'UNKNOWN'), "Refinamiento" if feedback else "Generación"):
+                    result = self.model.generate_json(prompt)
                 # Validar que tenga la estructura esperada
                 if self._is_valid_structure(result):
                     logger.info(f"JSON estructurado validado correctamente para {hu.get('ref', 'UNKNOWN')}")
@@ -259,7 +270,8 @@ Devuelve el resultado en un formato json estructurado EXACTAMENTE así (sin ning
             except Exception as gen_exc:
                 logger.warning(f"generate_json falló: {gen_exc}; intentando fallback a texto crudo")
                 # Fallback: si no se obtuvo JSON directo, solicitar texto y tratar de parsear
-                raw = self.model.generate_feature(prompt)
+                with contexto_llm(hu.get('ref', 'UNKNOWN'), "Refinamiento" if feedback else "Generación"):
+                    raw = self.model.generate_feature(prompt)
                 logger.debug(f"Respuesta cruda de Claude (primeros 1000 chars): {raw[:1000]!s}")
                 
                 # Intentar extraer JSON embebido
@@ -396,6 +408,8 @@ Devuelve el resultado en un formato json estructurado EXACTAMENTE así (sin ning
 
     def _generate_structured_fallback(self, hu: dict, raw_data=None) -> dict:
         """Genera un dict con estructura completa cuando Claude falla."""
+        if self.strict_mode:
+            raise ValueError("El LLM no devolvió artefactos válidos: no se admiten artefactos de relleno en modo estricto")
         hu_id = hu.get('ref', 'UNKNOWN')
         subj = hu.get('subject', 'Feature sin titulo')
         desc = hu.get('description', '')
@@ -673,13 +687,16 @@ Devuelve el resultado en un formato json estructurado EXACTAMENTE así (sin ning
     def faltantes_de_validacion(validation_result: dict) -> dict:
         """Extrae del resultado de validacion los casos faltantes a regenerar.
 
-        Devuelve un dict de feedback (criterios sin cubrir, escenarios faltantes,
-        sugerencias y errores de capas estaticas) o un dict vacio si no falta nada.
+        Devuelve feedback accionable (criterios sin cubrir, escenarios faltantes,
+        sugerencias y errores). Las advertencias solo se incluyen como contexto
+        adicional si hay algo que corregir; por si solas no activan el refinamiento.
         """
         semantica = validation_result.get("semantic_validation", {}) or {}
         sin_cubrir = semantica.get("criterios_sin_cubrir", []) or []
         faltantes = semantica.get("escenarios_faltantes", []) or []
         sugerencias = semantica.get("improvement_suggestions", []) or []
+        errores_funcionales = semantica.get("errors", []) or []
+        advertencias = list(semantica.get("warnings", []) or [])
 
         # Incluir errores de las capas estaticas (sint, cohesion, tecnica)
         validaciones = validation_result.get("validaciones") or {}
@@ -688,14 +705,17 @@ Devuelve el resultado en un formato json estructurado EXACTAMENTE así (sin ning
             capa_obj = validaciones.get(capa) or {}
             if not capa_obj.get("valid"):
                 errores_estaticos.extend(capa_obj.get("errors") or [])
+            advertencias.extend(capa_obj.get("warnings") or [])
 
-        if not (sin_cubrir or faltantes or sugerencias or errores_estaticos):
+        if not (sin_cubrir or faltantes or sugerencias or errores_estaticos or errores_funcionales):
             return {}
         return {
             "criterios_sin_cubrir": sin_cubrir,
             "escenarios_faltantes": faltantes,
             "improvement_suggestions": sugerencias,
             "errores_estaticos": errores_estaticos,
+            "errores_funcionales": errores_funcionales,
+            "advertencias": advertencias,
         }
 
     def regenerar_con_feedback(self, hu: dict, feedback: dict, endpoints: list = None) -> tuple:

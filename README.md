@@ -50,7 +50,9 @@ cp .env.example .env
 Contenido de `.env`:
 ```dotenv
 CLAUDE_API_KEY=sk-ant-....tu-clave...
-CLAUDE_MODEL=claude-3-5-sonnet-20241022
+CLAUDE_MODEL=claude-sonnet-5-5
+LLM_MAX_GENERATION_TOKENS=16000
+LLM_MAX_VALIDATION_TOKENS=9000
 TAIGA_USER=tu-email@taiga.io
 TAIGA_PASS=tu-contraseña
 ```
@@ -60,7 +62,7 @@ TAIGA_PASS=tu-contraseña
 En PowerShell:
 ```powershell
 $env:CLAUDE_API_KEY="sk-ant-...tu-clave..."
-$env:CLAUDE_MODEL="claude-3-5-sonnet-20241022"
+$env:CLAUDE_MODEL="claude-sonnet-5-5"
 $env:TAIGA_USER="tu-email@taiga.io"
 $env:TAIGA_PASS="tu-contraseña"
 ```
@@ -128,6 +130,30 @@ testing_payment/
 ├── .env.example             # Plantilla de variables de entorno
 └── requirements.txt         # Dependencias del proyecto
 ```
+
+## Evaluación de eficiencia (TFM)
+
+Ejecuta `python main.py` y selecciona una HU, el sprint activo o el esquema OpenAPI. Se utiliza exclusivamente Claude Sonnet para ambos agentes, con `claude-sonnet-5-5` por defecto (la versión configurada en el proyecto original). También se admite el identificador `claude-sonnet-5` si esa es la versión de la evaluación. Mantén el mismo identificador en todos los experimentos.
+
+Las métricas se guardan en los mismos Excel que el informe de calidad: `output/metricas_HU.xlsx` (HU individual y sprint) y `output/metricas_OpenAPI.xlsx` (YAML). Se añaden dos hojas:
+
+- **Eficiencia**: una fila por cada caso de uso ejecutado, con fecha, modelo, duración total, espera de decisiones humanas, duración del proceso sin dicha espera, tiempo de las peticiones, número de peticiones, tokens y coste estimado en USD.
+- **Peticiones**: una fila por cada intento de llamada HTTP al SDK de Claude, incluyendo generación, validación del contrato, validación semántica, refinamiento y reintentos. Se identifica tanto el agente como la HU o endpoint, si procede.
+
+El tiempo se mide con `time.perf_counter()`. La duración total incluye ingesta, generación, validación, refinamiento, ejecución de Behave (si se acepta) e informes normales, pero no la propia escritura de este nuevo Excel. Las respuestas incompletas y los reintentos también se contabilizan. No se confunde el límite de tokens del prompt con los tokens efectivos devueltos por `response.usage`.
+
+Tarifas de referencia de la API directa de Anthropic (consultadas el 17/11/2026; USD por millón de tokens):
+
+| Modelo | Entrada sin caché | Salida | Escritura caché 5 min | Escritura caché 1 h | Lectura caché |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Claude Sonnet 5.5 | 2 | 10 | 2.50 | 4 | 0.10 |
+| Claude Sonnet 5 | 2 | 10 | 2.50 | 4 | 0.20 |
+
+Fuente: [Anthropic: Pricing](https://platform.claude.com/docs/en/about-claude/pricing). El coste se obtiene multiplicando cada categoría de tokens por su tarifa y dividiendo entre 1.000.000. Es una estimación del coste de inferencia, no una factura (no incluye impuestos ni descuentos particulares). Si una petición no devuelve `usage`, aparece señalada y los totales se interpretan como parciales. El histórico no contiene claves ni contenidos de los prompts.
+
+Para repetir la evaluación limpia únicamente los artefactos de test que corresponda, conservando el histórico de eficiencia. Cierra el Excel antes de ejecutar si lo tienes abierto. Las hojas de calidad (`Metricas validacion`, `Dashboard`, `Evaluacion`) se reinician para la nueva ejecución, como antes; las hojas `Eficiencia` y `Peticiones` conservan el histórico.
+
+Las pruebas unitarias de medición no necesitan credenciales: `python -m unittest discover -s unit_tests -v`.
 
 ## Seguridad
 
